@@ -422,18 +422,12 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
             return InternalAcquireResult.RETURN_NULL;
         }
 
-        if ( hasWait )
-        {
-            long thisWaitMs = getThisWaitMs(startMs, waitMs);
-            if ( !lock.acquire(thisWaitMs, TimeUnit.MILLISECONDS) )
-            {
-                return InternalAcquireResult.RETURN_NULL;
-            }
+        if (!acquireMutex(startMs, hasWait, waitMs)) {
+            
+            return InternalAcquireResult.RETURN_NULL;
+            
         }
-        else
-        {
-            lock.acquire();
-        }
+        
         try
         {
             PathAndBytesable<String> createBuilder = client.create().creatingParentContainersIfNeeded().withProtection().withMode(createMode);
@@ -462,7 +456,7 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
                     }
                     
                     long minimumWaitMs = purgeExpiredLeases(nodeName, children);
-                   
+                    
                     
                     if ( hasWait )
                     {
@@ -489,21 +483,61 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         }
         finally
         {
-            lock.release();
+            releaseMutex();
         }
         return InternalAcquireResult.CONTINUE;
     }
-
+    
+    /**
+     * @param startMs
+     * @param hasWait
+     * @param waitMs
+     * @throws Exception
+     */
+    protected boolean acquireMutex(long startMs, boolean hasWait, long waitMs) throws Exception {
+        if ( hasWait )
+        {
+            long thisWaitMs = getThisWaitMs(startMs, waitMs);
+            return lock.acquire(thisWaitMs, TimeUnit.MILLISECONDS);
+        }
+        else
+        {
+            return lock.acquire(-1, null);
+        }
+    }
+    
+    /**
+     * @throws Exception
+     */
+    protected void releaseMutex() throws Exception {
+        lock.release();
+    }
+    
+    /**
+     * Return shared time to live for leases in this semaphore
+     * @return Lease TTL or negative number of no TTL is defined
+     */
+    private int getLeaseTimeToLive() {
+        try {
+            return timeToLive.getCount();
+        } catch (Exception ex) {
+            log.warn("Time to live for {} is not valid {}", leasesPath, ex);
+            return Integer.MIN_VALUE;
+        }
+    }
+    
     /**
      * @param nodeName
      * @param children
-     * @return
+     * @return The duration until next expiring lease, or a negative number if
+     *         none of the leases are expiring (expiration disabled, all leases
+     *         purged, etc...)
      * @throws Exception
      */
     protected long purgeExpiredLeases(String nodeName, List<String> children) throws Exception {
         int oldestNonExpiredChildAge = Integer.MIN_VALUE;
 
-        int timeToLiveMs = timeToLive.getCount();
+        int timeToLiveMs = getLeaseTimeToLive();
         if (timeToLiveMs < 0) {
             return oldestNonExpiredChildAge;
         }
