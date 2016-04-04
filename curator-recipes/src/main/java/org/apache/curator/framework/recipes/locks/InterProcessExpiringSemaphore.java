@@ -21,7 +21,6 @@ package org.apache.curator.framework.recipes.locks;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
@@ -95,14 +94,13 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
     private final InterProcessMutex lock;
     private final CuratorFramework client;
     private final CurrentTimeProvider currentTimeProvider;
-    // if time to live is null, do not try to purse expired leases
-    private final Duration timeToLive;
+    
     private final CreateMode createMode;
     
     private final String leasesPath;
     private final AtomicReference<ExpirationSpec<Lease>>   expirable = new AtomicReference<ExpirationSpec<Lease>>(null);
+    private final SharedCountReader timeToLive;
     
-//    private final String revocationPath;
     private final Watcher watcher = new Watcher()
     {
         @Override
@@ -118,19 +116,34 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         {
             if ( event.getType() == Watcher.Event.EventType.NodeDeleted )
             {
-                
-//                checkRevocableWatcher(event.getPath());
+                String leasePath = event.getPath();
+                ExpirationSpec<Lease> spec = expirable.get();
+                if (spec != null) {
+                    Lease lease = makeLease(leasePath);
+                    notifyExpiredLease(lease, spec);
+                }
             }
         }
     };
 
+    private void notifyExpiredLease(final Lease lease, final ExpirationSpec<Lease> spec) {
+        spec.getExecutor().execute(new Runnable() {
+            
+            @Override
+            public void run() {
+                
+                spec.getRunnable().lockExpired(lease);
+            }
+        });   
+    }
+    
     private volatile byte[] nodeData;
     private volatile int maxLeases;
 
     private static final String LOCK_PARENT = "locks";
     private static final String TIME_PARENT = "time";
     private static final String LEASE_PARENT = "leases";
-//    private static final String REVOKATION_PARENT = "revokations";
+    
     private static final String LEASE_BASE_NAME = "lease-";
     public static final Set<String> LOCK_SCHEMA = Sets.newHashSet(
             LOCK_PARENT,
@@ -138,11 +151,20 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
     );
 
     /**
-     * @param client    the client
-     * @param path      path for the semaphore
-     * @param maxLeases the max number of leases to allow for this instanceZ
+     * @param client
+     *            the client
+     * @param path
+     *            path for the semaphore
+     * @param maxLeases
+     *            the max number of leases to allow for this instance
+     * @param timeToLive
+     *            time to live in milliseconds for any lease in this instance
+     * @param createMode
+     *            Sequential ZK {@link CreateMode}, must be either
+     *            {@link CreateMode#EPHEMERAL_SEQUENTIAL} or
+     *            {@link CreateMode#PERSISTENT_SEQUENTIAL}
      */
-    public InterProcessExpiringSemaphore(CuratorFramework client, String path, int maxLeases, Duration timeToLive, CreateMode createMode)
+    public InterProcessExpiringSemaphore(CuratorFramework client, String path, int maxLeases, SharedCountReader timeToLive, CreateMode createMode)
     {
         this(client, path, maxLeases, null, timeToLive, createMode);
     }
@@ -151,13 +173,19 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
      * @param client the client
      * @param path   path for the semaphore
      * @param count  the shared count to use for the max leases
+     * @param timeToLive
+     *            shared time to live in milliseconds for any lease in this instance
+     * @param createMode
+     *            Sequential ZK {@link CreateMode}, must be either
+     *            {@link CreateMode#EPHEMERAL_SEQUENTIAL} or
+     *            {@link CreateMode#PERSISTENT_SEQUENTIAL}
      */
-    public InterProcessExpiringSemaphore(CuratorFramework client, String path, SharedCountReader count, Duration timeToLive, CreateMode createMode)
+    public InterProcessExpiringSemaphore(CuratorFramework client, String path, SharedCountReader count, SharedCountReader timeToLive, CreateMode createMode)
     {
         this(client, path, 0, count, timeToLive, createMode);
     }
     
-    private InterProcessExpiringSemaphore(CuratorFramework client, String path, int maxLeases, SharedCountReader count, Duration timeToLive, CreateMode createMode)
+    private InterProcessExpiringSemaphore(CuratorFramework client, String path, int maxLeases, SharedCountReader count, SharedCountReader timeToLive, CreateMode createMode)
     {
         
         this.client = client;
@@ -166,11 +194,10 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         this.lock = new InterProcessMutex(client, ZKPaths.makePath(path, LOCK_PARENT));
         this.maxLeases = (count != null) ? count.getCount() : maxLeases;
         // if time to live is null, do not try to purse expired leases
-        this.timeToLive = timeToLive;
         this.createMode = createMode != null && createMode.isSequential() ? createMode : CreateMode.EPHEMERAL_SEQUENTIAL;
+        this.timeToLive = Preconditions.checkNotNull(timeToLive, "Time to live is required");
         
-        leasesPath = ZKPaths.makePath(path, LEASE_PARENT);
-//        revocationPath = ZKPaths.makePath(path, REVOKATION_PARENT);
+        this.leasesPath = ZKPaths.makePath(path, LEASE_PARENT);
 
         if ( count != null )
         {
@@ -387,6 +414,7 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         RETRY_DUE_TO_MISSING_NODE
     }
 
+
     private InternalAcquireResult internalAcquire1Lease(ImmutableList.Builder<Lease> builder, long startMs, boolean hasWait, long waitMs) throws Exception
     {
         if ( client.getState() != CuratorFrameworkState.STARTED )
@@ -412,9 +440,9 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
             String path = (nodeData != null) ? createBuilder.forPath(ZKPaths.makePath(leasesPath, LEASE_BASE_NAME), nodeData) : createBuilder.forPath(ZKPaths.makePath(leasesPath, LEASE_BASE_NAME));
             String nodeName = ZKPaths.getNodeFromPath(path);
             builder.add(makeLease(path));
-
+            
             if (expirable.get() != null) {
-                byte[] data = client.getData().usingWatcher(expiredWatcher).forPath(path);
+                client.getData().usingWatcher(expiredWatcher).forPath(path);
             }
             
             synchronized(this)
@@ -427,28 +455,33 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
                         log.error("Sequential path not found: " + path);
                         return InternalAcquireResult.RETRY_DUE_TO_MISSING_NODE;
                     }
-
+                    
                     if ( children.size() <= maxLeases )
                     {
                         break;
                     }
                     
-                    purgeExpiredLeases(nodeName, children);
-
+                    long minimumWaitMs = purgeExpiredLeases(nodeName, children);
+                   
+                    
                     if ( hasWait )
                     {
                         long thisWaitMs = getThisWaitMs(startMs, waitMs);
-                        log.info("No free locks in '{}', waiting for {} ms ...", path, thisWaitMs);
                         if ( thisWaitMs <= 0 )
                         {
-                            log.info("Expired waiting for '{}', exiting", path);
                             return InternalAcquireResult.RETURN_NULL;
                         }
+                        
+                        // find out if a child node is to expire before thisWaitMs, we the thread would wake up as soon as the node is due to expire
+                        if (minimumWaitMs > 0) {
+                            hasWait = true;
+                            thisWaitMs = Math.min(thisWaitMs, minimumWaitMs);
+                        }
+                        
                         wait(thisWaitMs);
                     }
                     else
                     {
-                        log.warn("No free locks in '{}', waiting indefinaty...", path);
                         wait();
                     }
                 }
@@ -467,9 +500,12 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
      * @return
      * @throws Exception
      */
-    protected void purgeExpiredLeases(String nodeName, List<String> children) throws Exception {
-        if (timeToLive == null) {
-            return;
+    protected long purgeExpiredLeases(String nodeName, List<String> children) throws Exception {
+        int oldestNonExpiredChildAge = Integer.MIN_VALUE;
+
+        int timeToLiveMs = timeToLive.getCount();
+        if (timeToLiveMs < 0) {
+            return oldestNonExpiredChildAge;
         }
         
         // Inter-Process safe way of getting current ZK time (avoid
@@ -484,30 +520,32 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
                 continue;
             }
             String childPath = ZKPaths.makePath(leasesPath, child);
-//            String childRevocationPath = ZKPaths.makePath(revocationPath, child);
             try {
                 // get the data for the given child node to see if it has expired
                 NodeStatAndData childNode = getStatAndData(childPath);
+                
                 // compute the age of the node
                 long nodeAge = currentTime - childNode.getCreatedTime();
                 log.trace("Lease {} is {} ms old", childPath, nodeAge);
-                if (nodeAge > timeToLive.toMillis()) {
+                if (nodeAge > timeToLiveMs) {
                     log.warn("Lease {} expired (age: {} ms), evicting...", childPath, nodeAge);
                     client.delete().forPath(childPath);
                     log.warn("Lease {} purged", childPath);
-                    
-//                    String originalClient = childNode.getStringData();
-//                    String newClient = new String (nodeData);
-//                    String payload = "Lock by " + originalClient + " has expired (" + nodeAge + " ms) - revoked by " + newClient;
-//                    log.warn(payload);
-//                    byte[] revokeData = payload.getBytes();
-                    
-//                    client.create().creatingParentContainersIfNeeded().forPath(childRevocationPath, revokeData);
+                } else {
+                    if (oldestNonExpiredChildAge < nodeAge) {
+                        oldestNonExpiredChildAge = (int)nodeAge;
+                    }
                 }
+            } catch (KeeperException.NoNodeException ex) {
+                log.trace("Attempting to purge {}, but node is already removed", childPath);
             } catch (Exception ex) {
                 log.warn("Unable to determine if child node {} is expired due to {}",childPath, ex.getMessage());
             }
         }
+        
+        // if not not all child nodes expired, figure out how long until next node is due to expire
+        int timeToNextExpiredChild = (timeToLiveMs - oldestNonExpiredChildAge);
+        return timeToNextExpiredChild;
     }
 
     private NodeStatAndData getStatAndData(String path) throws Exception {
@@ -535,7 +573,7 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
                 }
                 catch ( KeeperException.NoNodeException e )
                 {
-                    log.warn("Lease already released", e);
+                    log.warn("Lease {} already released", path, e);
                 }
                 catch ( Exception e )
                 {
