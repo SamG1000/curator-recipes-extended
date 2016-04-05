@@ -607,7 +607,7 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
                 }
                 catch ( KeeperException.NoNodeException e )
                 {
-                    log.warn("Lease {} already released", path, e);
+                    log.warn("Lease {} already released", path);
                 }
                 catch ( Exception e )
                 {
