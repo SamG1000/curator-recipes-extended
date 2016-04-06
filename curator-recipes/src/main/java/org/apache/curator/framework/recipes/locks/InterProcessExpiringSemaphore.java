@@ -34,7 +34,6 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.api.CuratorWatcher;
 import org.apache.curator.framework.api.PathAndBytesable;
 import org.apache.curator.framework.imps.CuratorFrameworkState;
-import org.apache.curator.framework.recipes.nodes.NodeStatAndData;
 import org.apache.curator.framework.recipes.shared.SharedCountListener;
 import org.apache.curator.framework.recipes.shared.SharedCountReader;
 import org.apache.curator.framework.recipes.time.CurrentTimeProvider;
@@ -88,7 +87,7 @@ import com.google.common.util.concurrent.MoreExecutors;
  * Thanks to Ben Bangert (ben@groovie.org) for the algorithm used.
  * </p>
  */
-public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease>
+public class InterProcessExpiringSemaphore implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final InterProcessMutex lock;
@@ -117,6 +116,7 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
             if ( event.getType() == Watcher.Event.EventType.NodeDeleted )
             {
                 String leasePath = event.getPath();
+                
                 ExpirationSpec<Lease> spec = expirable.get();
                 if (spec != null) {
                     Lease lease = makeLease(leasePath);
@@ -228,13 +228,11 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         notifyFromWatcher();
     }
     
-    @Override
-    public void makeExpirable(ExpirationListener<Lease> listener) {
-        makeExpirable(listener, MoreExecutors.sameThreadExecutor());
+    public void addExpirationListener(ExpirationListener<Lease> listener) {
+        addExpirationListener(listener, MoreExecutors.sameThreadExecutor());
     }
     
-    @Override
-    public void makeExpirable(ExpirationListener<Lease> listener, Executor executor) {
+    public void addExpirationListener(ExpirationListener<Lease> listener, Executor executor) {
         expirable.set(new ExpirationSpec<Lease>(executor, listener));
     }
     
@@ -556,10 +554,10 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
             String childPath = ZKPaths.makePath(leasesPath, child);
             try {
                 // get the data for the given child node to see if it has expired
-                NodeStatAndData childNode = getStatAndData(childPath);
+                long createdTime = getCreatedTime(childPath);
                 
                 // compute the age of the node
-                long nodeAge = currentTime - childNode.getCreatedTime();
+                long nodeAge = currentTime - createdTime;
                 log.trace("Lease {} is {} ms old", childPath, nodeAge);
                 if (nodeAge > timeToLiveMs) {
                     log.warn("Lease {} expired (age: {} ms), evicting...", childPath, nodeAge);
@@ -582,10 +580,10 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
         return timeToNextExpiredChild;
     }
 
-    private NodeStatAndData getStatAndData(String path) throws Exception {
+    private long getCreatedTime(String path) throws Exception {
         Stat stat = new Stat();
-        byte[] data = client.getData().storingStatIn(stat).forPath(path);
-        return new NodeStatAndData(path, stat, data);
+        client.getData().storingStatIn(stat).forPath(path);
+        return stat.getCtime();
     }
     
     private long getThisWaitMs(long startMs, long waitMs)
@@ -627,6 +625,59 @@ public class InterProcessExpiringSemaphore implements Closeable, Expirable<Lease
     private synchronized void notifyFromWatcher()
     {
         notifyAll();
+    }
+    
+
+    public static class NodeStatAndData {
+        private final String path;
+        private final Stat stat;
+        private final byte[] data;
+        
+        public NodeStatAndData(String path, Stat stat, byte[] data) {
+            this.path = path;
+            this.stat = stat;
+            this.data = data;
+        }
+    
+        /**
+         * @return the path
+         */
+        public String getPath() {
+            return path;
+        }
+    
+        /**
+         * @return the stat
+         */
+        public Stat getStat() {
+            return stat;
+        }
+    
+        /**
+         * @return the data
+         */
+        public byte[] getData() {
+            return data;
+        }
+        
+        /**
+         * @return the data
+         */
+        public String getStringData() {
+            return new String(data);
+        }
+        
+        public long getCreatedTime() {
+            return stat.getCtime();
+        }
+    
+        public long getModifiedTime() {
+            return stat.getMtime();
+        }
+        
+        public int getChildrenCount() {
+            return stat.getNumChildren();
+        }
     }
 }
 
