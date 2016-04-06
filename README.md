@@ -1,2 +1,0 @@
-# curator
-apache curator project
