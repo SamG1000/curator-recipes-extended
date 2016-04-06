@@ -124,10 +124,20 @@
     </ciManagement>
 
     <distributionManagement>
-        <site>
-            <id>apache.website.svnpub</id>
-            <url>scm:svn:https://svn.apache.org/repos/asf/curator/site/trunk</url>
-        </site>
+<!--         <site> -->
+<!--             <id>apache.website.svnpub</id> -->
+<!--             <url>scm:svn:https://svn.apache.org/repos/asf/curator/site/trunk</url> -->
+<!--         </site> -->
+        <repository>
+            <id>ccp-tools-releases</id>
+            <name>XTOOLS Releases</name>
+            <url>https://maven.teamccp.com/content/repositories/ccp-tools-releases/</url>
+        </repository>
+        <snapshotRepository>
+            <id>ccp-tools-snapshots</id>
+            <name>XTOOLS Snapshots</name>
+            <url>https://maven.teamccp.com/content/repositories/ccp-tools-snapshots/</url>
+        </snapshotRepository>
     </distributionManagement>
 
     <mailingLists>
