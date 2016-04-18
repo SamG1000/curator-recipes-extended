@@ -49,7 +49,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @SuppressWarnings({"SynchronizationOnLocalVariableOrMethodParameter"})
-public class TestInterProcessSemaphore extends BaseClassForTests
+public class TestInterProcessExpiringSemaphore extends BaseClassForTests
 {
     @Test
     public void testThreadedLeaseIncrease() throws Exception
